@@ -6,3 +6,7 @@ __pycache__
 *.py[cod]
 .env
 dev.ipynb
+
+/target/
+**/*.rs.bk
+Cargo.lock
