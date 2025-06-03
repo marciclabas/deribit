@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::{core::{parse_json, DeribitResponse, Error}, PublicClient};
+use crate::core::{client::LogLevel, parse_json, DeribitResponse, Error, PublicClient};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
@@ -63,6 +63,11 @@ pub struct PrivateClient {
 }
 
 impl PrivateClient {
+  /// Authenticate an existing public client session.
+  /// - `client_id` - The client ID provided by Deribit.
+  /// - `client_secret` - The client secret provided by Deribit.
+  ///
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
   pub async fn authenticate(
     client_id: &str,
     client_secret: &str,
@@ -74,12 +79,32 @@ impl PrivateClient {
 
   /// Start a new authenticated client session.
   /// - `url` - The URL of the Deribit API, e.g. `deribit::MAINNET` or `deribit::TESTNET`.
+  /// - `client_id` - The client ID provided by Deribit.
+  /// - `client_secret` - The client secret provided by Deribit.
+  ///
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
   pub async fn start(
     url: &str,
     client_id: &str,
     client_secret: &str,
   ) -> Result<Self, Error> {
     let client = PublicClient::connect(url).await?;
+    Self::authenticate(client_id, client_secret, client).await
+  }
+  
+  /// Start a new authenticated client session with debug mode enabled.
+  /// - `url` - The URL of the Deribit API, e.g. `deribit::MAINNET` or `deribit::TESTNET`.
+  /// - `client_id` - The client ID provided by Deribit.
+  /// - `client_secret` - The client secret provided by Deribit.
+  ///
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
+  pub async fn start_debug(
+    url: &str,
+    client_id: &str,
+    client_secret: &str,
+    log: LogLevel,
+  ) -> Result<Self, Error> {
+    let client = PublicClient::connect_debug(url, log).await?;
     Self::authenticate(client_id, client_secret, client).await
   }
 

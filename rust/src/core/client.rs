@@ -12,6 +12,16 @@ use crate::core::{ApiError, Error};
 pub const TESTNET: &str = "wss://test.deribit.com/ws/api/v2";
 pub const MAINNET: &str = "wss://www.deribit.com/ws/api/v2";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+  None = 0,
+  Error = 1,
+  Warning = 2,
+  Info = 3,
+  Debug = 4,
+  Trace = 5,
+}
+
 /// Represents a full JSON-RPC response, with either a result or an error.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeribitResponse {
@@ -44,14 +54,15 @@ pub struct JsonRpcRequest {
 }
 
 pub struct PublicClient {
-  id: u64,
-  write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-  subscribers: Arc<Mutex<HashMap<u64, oneshot::Sender<DeribitResponse>>>>,
+  pub log: LogLevel,
+  pub id: u64,
+  pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+  pub subscribers: Arc<Mutex<HashMap<u64, oneshot::Sender<DeribitResponse>>>>,
 }
 
 impl PublicClient {
 
-  pub fn start(socket: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+  pub fn start_impl(socket: WebSocketStream<MaybeTlsStream<TcpStream>>, log: LogLevel) -> Self {
 
     let (write, mut read) = socket.split();
     let subscribers: Arc<Mutex<HashMap<u64, oneshot::Sender<DeribitResponse>>>>
@@ -63,21 +74,57 @@ impl PublicClient {
         if let Ok(resp) = serde_json::from_str::<DeribitResponse>(&txt) {
           let mut subs = subs_clone.lock().await;
           if let Some(sender) = subs.remove(&resp.id) {
+            if log >= LogLevel::Debug {
+              println!("Received response: {:?}", resp);
+            }
             let _ = sender.send(resp);
           }
+          else if log >= LogLevel::Warning {
+            println!("No subscriber for response ID {}: {:?}", resp.id, resp);
+          }
+        }
+        else if log >= LogLevel::Error {
+          println!("Failed to parse response: {}", txt);
         }
       }
     });
 
-    Self { id: 0, write, subscribers }
+    Self { id: 0, write, subscribers, log }
+  }
+
+  /// Start a new public client session with the given WebSocket stream.
+  /// - `socket` - The WebSocket stream to use for communication.
+  pub fn start(socket: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+    Self::start_impl(socket, LogLevel::None)
+  }
+
+  /// Start a new public client session with the given WebSocket stream and debug mode.
+  /// - `socket` - The WebSocket stream to use for communication.
+  /// - `log` - log level (higher is more verbose).
+  pub fn start_debug(socket: WebSocketStream<MaybeTlsStream<TcpStream>>, log: LogLevel) -> Self {
+    Self::start_impl(socket, log)
+  }
+
+  pub async fn connect_impl(url: &str, log: LogLevel) -> Result<Self, Error> {
+    if log >= LogLevel::Info {
+      println!("[INFO] Connecting to WebSocket to {}", url);
+    }
+    let (socket, _) = connect_async(url).await
+    .map_err(|e| Error::WebSocket(e))?;
+    Ok(Self::start_impl(socket, log))
   }
 
   /// Start an aunthenticated client session.
   /// - `url` - The WebSocket URL to connect to, e.g. `deribit::TESTNET` or `deribit::MAINNET`.
   pub async fn connect(url: &str) -> Result<Self, Error> {
-    let (socket, _) = connect_async(url).await
-      .map_err(|e| Error::WebSocket(e))?;
-    Ok(Self::start(socket))
+    Self::connect_impl(url, LogLevel::None).await
+  }
+
+  /// Start an aunthenticated client session with debug mode enabled.
+  /// - `url` - The WebSocket URL to connect to, e.g. `deribit::TESTNET` or `deribit::MAINNET`.
+  /// - `log` - log level (higher is more verbose).
+  pub async fn connect_debug(url: &str, log: LogLevel) -> Result<Self, Error> {
+    Self::connect_impl(url, log).await
   }
 
   /// Send an unauthenticated request without waiting for the reply. For **public** methods only.
@@ -90,6 +137,12 @@ impl PublicClient {
       method: method.to_string(),
       params,
     })?;
+    if self.log >= LogLevel::Debug {
+      println!("[DEBUG] Sending message with ID: {}", id);
+    }
+    else if self.log >= LogLevel::Trace {
+      println!("[TRACE] Sending message: {}", msg);
+    }
     self.write.send(Message::Text(msg)).await?;
     Ok(())
   }
