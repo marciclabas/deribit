@@ -7,6 +7,6 @@ __pycache__
 .env
 dev.ipynb
 
-/target/
+rust/target/
 **/*.rs.bk
 Cargo.lock
