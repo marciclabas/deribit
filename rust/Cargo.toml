@@ -1,0 +1,19 @@
+[package]
+name = "deribit"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "deribit"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+tungstenite = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+futures-util = "0.3"
+url = "2.4"
+dotenv = "0.15.0"
+
