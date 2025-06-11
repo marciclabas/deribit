@@ -23,12 +23,14 @@ pub struct Auth {
   pub expires_at: std::time::Instant,
 }
 
-impl Auth {
-  pub fn new(response: AuthResponse) -> Self {
-    let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(response.expires_in as u64);
-    Self { response, expires_at }
+impl AuthResponse {
+  pub fn parse(self) -> Auth {
+    let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(self.expires_in as u64);
+    Auth { response: self, expires_at }
   }
+}
 
+impl Auth {
   pub fn expired(&self) -> bool {
     self.expires_at <= std::time::Instant::now()
   }
@@ -42,18 +44,18 @@ impl PublicClient {
       "client_secret": client_secret,
     });
     let resp = self.request("public/auth", params).await?.value()?;
-    let auth = parse_json::<AuthResponse>(resp)?;
-    Ok(Auth::new(auth))
+    let auth = parse_json::<AuthResponse>(resp)?.parse();
+    Ok(auth)
   }
 
-  pub async fn refresh_token(&mut self, refresh_token: &str) -> Result<Auth, Error> {
-    let params = serde_json::json!({
-      "grant_type": "refresh_token",
-      "refresh_token": refresh_token,
-    });
-    let resp = self.request("public/auth", params).await?.value()?;
-    let auth = parse_json::<AuthResponse>(resp)?;
-    Ok(Auth::new(auth))
+  /// Authenticate an existing public client session.
+  /// - `client_id` - The client ID provided by Deribit.
+  /// - `client_secret` - The client secret provided by Deribit.
+  ///
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
+  pub async fn authenticated(mut self, client_id: &str, client_secret: &str) -> Result<PrivateClient, Error> {
+    let auth = self.authenticate(client_id, client_secret).await?;
+    Ok(PrivateClient { client: self, auth })
   }
 }
 
@@ -63,20 +65,6 @@ pub struct PrivateClient {
 }
 
 impl PrivateClient {
-  /// Authenticate an existing public client session.
-  /// - `client_id` - The client ID provided by Deribit.
-  /// - `client_secret` - The client secret provided by Deribit.
-  ///
-  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
-  pub async fn authenticate(
-    client_id: &str,
-    client_secret: &str,
-    mut client: PublicClient,
-  ) -> Result<Self, Error> {
-    let auth = client.authenticate(client_id, client_secret).await?;
-    Ok(Self { client, auth })
-  }
-
   /// Start a new authenticated client session.
   /// - `url` - The URL of the Deribit API, e.g. `deribit::MAINNET` or `deribit::TESTNET`.
   /// - `client_id` - The client ID provided by Deribit.
@@ -89,7 +77,7 @@ impl PrivateClient {
     client_secret: &str,
   ) -> Result<Self, Error> {
     let client = PublicClient::connect(url).await?;
-    Self::authenticate(client_id, client_secret, client).await
+    client.authenticated(client_id, client_secret).await
   }
   
   /// Send an unauthenticated request. For **public** methods only.
@@ -103,7 +91,12 @@ impl PrivateClient {
   /// 
   /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
   pub async fn refresh_token(&mut self) -> Result<&Auth, Error> {
-    self.auth = self.client.refresh_token(&self.auth.response.refresh_token).await?;
+    let params = serde_json::json!({
+      "grant_type": "refresh_token",
+      "refresh_token": self.auth.response.refresh_token,
+    });
+    let resp = self.request("public/auth", params).await?.value()?;
+    self.auth = parse_json::<AuthResponse>(resp)?.parse();
     Ok(&self.auth)
   }
 
@@ -117,7 +110,7 @@ impl PrivateClient {
     self.request(method, params).await
   }
 
-  /// Exchanges the current access token for a subaccount's token.
+  /// Exchanges the current access token for a subaccount's token. Doesn't change the current authentication context; use `swtich_subaccount` for that.
   /// - `subject_id` - The ID of the subaccount to exchange the token for. Can be found on https://deribit.com/account/BTC/subaccounts.
   /// 
   /// Source: [Deribit docs](https://docs.deribit.com/#public-exchange_token)
@@ -127,8 +120,8 @@ impl PrivateClient {
       "subject_id": subject_id,
     });
     let val = self.request("public/exchange_token", params).await?.value()?;
-    let auth = parse_json::<AuthResponse>(val)?;
-    Ok(Auth::new(auth))
+    let auth = parse_json::<AuthResponse>(val)?.parse();
+    Ok(auth)
   }
 
   /// Switches the current authentication context to a subaccount
