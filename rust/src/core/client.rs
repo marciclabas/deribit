@@ -17,12 +17,12 @@ pub struct JsonRpcRequest<'a> {
 }
 
 
-pub struct PublicClient {
+pub struct SocketClient {
   pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
   pub handler: ResponseHandler,
 }
 
-impl PublicClient {
+impl SocketClient {
 
   /// Start a new public client session with the given WebSocket stream.
   /// - `socket` - The WebSocket stream to use for communication.

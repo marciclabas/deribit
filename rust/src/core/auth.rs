@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use crate::core::{parse_json, Error, PublicClient, Response, Scope};
+use crate::core::{parse_json, Error, SocketClient, Response, Scope};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
@@ -38,7 +38,7 @@ impl Auth {
   }
 }
 
-impl PublicClient {
+impl SocketClient {
   /// Authenticate an existing public client session. Returns the authentication details; use `authenticated` to get a `PrivateClient`.
   /// - `client_id` - The client ID provided by Deribit.
   /// - `client_secret` - The client secret provided by Deribit.
@@ -71,7 +71,7 @@ impl PublicClient {
 }
 
 pub struct PrivateClient {
-  pub client: Arc<Mutex<PublicClient>>,
+  pub client: Arc<Mutex<SocketClient>>,
   pub auth: Auth,
 }
 
@@ -88,7 +88,7 @@ impl PrivateClient {
     client_secret: &str,
     scope: Scope,
   ) -> Result<Self, Error> {
-    let client = PublicClient::connect(url).await?;
+    let client = SocketClient::connect(url).await?;
     client.authenticated(client_id, client_secret, scope).await
   }
   
