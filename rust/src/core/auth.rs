@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::core::{client::LogLevel, parse_json, DeribitResponse, Error, PublicClient};
+use crate::core::{parse_json, Response, Error, PublicClient};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
@@ -92,26 +92,10 @@ impl PrivateClient {
     Self::authenticate(client_id, client_secret, client).await
   }
   
-  /// Start a new authenticated client session with debug mode enabled.
-  /// - `url` - The URL of the Deribit API, e.g. `deribit::MAINNET` or `deribit::TESTNET`.
-  /// - `client_id` - The client ID provided by Deribit.
-  /// - `client_secret` - The client secret provided by Deribit.
-  ///
-  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
-  pub async fn start_debug(
-    url: &str,
-    client_id: &str,
-    client_secret: &str,
-    log: LogLevel,
-  ) -> Result<Self, Error> {
-    let client = PublicClient::connect_debug(url, log).await?;
-    Self::authenticate(client_id, client_secret, client).await
-  }
-
   /// Send an unauthenticated request. For **public** methods only.
   /// - `method` - The API method to call, e.g. `"public/get_instruments"`
   /// - `params` - The parameters for the request, as a JSON object.
-  pub async fn request(&mut self, method: &str, params: serde_json::Value) -> Result<DeribitResponse, Error> {
+  pub async fn request(&mut self, method: &str, params: serde_json::Value) -> Result<Response, Error> {
     self.client.request(method, params).await
   }
 
@@ -124,7 +108,7 @@ impl PrivateClient {
   }
 
   /// Send an authenticated request using the current access token.
-  pub async fn authed_request(&mut self, method: &str, params: serde_json::Value) -> Result<DeribitResponse, Error> {
+  pub async fn authed_request(&mut self, method: &str, params: serde_json::Value) -> Result<Response, Error> {
     if self.auth.expired() {
       self.refresh_token().await?;
     }
