@@ -1,5 +1,7 @@
+use std::sync::{Arc, Mutex};
+
 use serde::{Deserialize, Serialize};
-use crate::core::{parse_json, Response, Error, PublicClient};
+use crate::core::{parse_json, Error, PublicClient, Response, Scope};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
@@ -12,7 +14,7 @@ pub struct AuthResponse {
   #[serde(default)]
   pub mandatory_tfa_status: String,
   pub refresh_token: String,
-  pub scope: String,
+  pub scope: Scope,
   pub sid: Option<String>,
   pub token_type: String,
 }
@@ -37,30 +39,39 @@ impl Auth {
 }
 
 impl PublicClient {
-  pub async fn authenticate(&mut self, client_id: &str, client_secret: &str) -> Result<Auth, Error> {
+  /// Authenticate an existing public client session. Returns the authentication details; use `authenticated` to get a `PrivateClient`.
+  /// - `client_id` - The client ID provided by Deribit.
+  /// - `client_secret` - The client secret provided by Deribit.
+  /// - `scope` - The scope of the new private session, e.g. `deribit::Scope::default()`.
+  ///
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
+  pub async fn authenticate(&mut self, client_id: &str, client_secret: &str, scope: Scope) -> Result<Auth, Error> {
     let params = serde_json::json!({
       "grant_type": "client_credentials",
       "client_id": client_id,
       "client_secret": client_secret,
+      "scope": scope.dump(),
     });
     let resp = self.request("public/auth", params).await?.value()?;
     let auth = parse_json::<AuthResponse>(resp)?.parse();
     Ok(auth)
   }
 
-  /// Authenticate an existing public client session.
+  /// Authenticate an existing public client session. The returned client can be used to make authenticated requests.
   /// - `client_id` - The client ID provided by Deribit.
   /// - `client_secret` - The client secret provided by Deribit.
+  /// - `scope` - The scope (i.e. permissions) of the new private session, e.g. `deribit::Scope::default()`.
   ///
   /// Source: [Deribit docs](https://docs.deribit.com/#public-auth)
-  pub async fn authenticated(mut self, client_id: &str, client_secret: &str) -> Result<PrivateClient, Error> {
-    let auth = self.authenticate(client_id, client_secret).await?;
-    Ok(PrivateClient { client: self, auth })
+  pub async fn authenticated(mut self, client_id: &str, client_secret: &str, scope: Scope) -> Result<PrivateClient, Error> {
+    let auth = self.authenticate(client_id, client_secret, scope).await?;
+    let client = Arc::new(Mutex::new(self));
+    Ok(PrivateClient { client, auth })
   }
 }
 
 pub struct PrivateClient {
-  pub client: PublicClient,
+  pub client: Arc<Mutex<PublicClient>>,
   pub auth: Auth,
 }
 
@@ -75,16 +86,26 @@ impl PrivateClient {
     url: &str,
     client_id: &str,
     client_secret: &str,
+    scope: Scope,
   ) -> Result<Self, Error> {
     let client = PublicClient::connect(url).await?;
-    client.authenticated(client_id, client_secret).await
+    client.authenticated(client_id, client_secret, scope).await
   }
   
   /// Send an unauthenticated request. For **public** methods only.
   /// - `method` - The API method to call, e.g. `"public/get_instruments"`
   /// - `params` - The parameters for the request, as a JSON object.
   pub async fn request(&mut self, method: &str, params: serde_json::Value) -> Result<Response, Error> {
-    self.client.request(method, params).await
+    self.client.as_ref().lock().unwrap().request(method, params).await
+  }
+
+  /// Send an unauthenticated message without waiting for a response.
+  /// This is useful for methods that don't return a response, like `private/logout`.
+  /// - `method` - The API method to call, e.g. `"private/logout"`
+  /// - `params` - The parameters for the request, as a JSON object.
+  /// - `id` - The ID of the request. This is generally used to match the response to the request.
+  pub async fn send(&mut self, method: &str, params: serde_json::Value, id: u64) -> Result<(), Error> {
+    self.client.as_ref().lock().unwrap().send(method, params, id).await
   }
 
   /// Refresh the current access token using the stored refresh token.
@@ -112,13 +133,17 @@ impl PrivateClient {
 
   /// Exchanges the current access token for a subaccount's token. Doesn't change the current authentication context; use `swtich_subaccount` for that.
   /// - `subject_id` - The ID of the subaccount to exchange the token for. Can be found on https://deribit.com/account/BTC/subaccounts.
+  /// - `scope` - Optional scope to request. Permissions cannot exceed those of the current session.
   /// 
   /// Source: [Deribit docs](https://docs.deribit.com/#public-exchange_token)
-  pub async fn exchange_token(&mut self, subject_id: i64) -> Result<Auth, Error> {
-    let params = serde_json::json!({
+  pub async fn exchange_token(&mut self, subject_id: i64, scope: Option<Scope>) -> Result<Auth, Error> {
+    let mut params = serde_json::json!({
       "refresh_token": self.auth.response.refresh_token,
       "subject_id": subject_id,
     });
+    if let Some(scope) = scope {
+      params["scope"] = serde_json::Value::String(scope.dump());
+    }
     let val = self.request("public/exchange_token", params).await?.value()?;
     let auth = parse_json::<AuthResponse>(val)?.parse();
     Ok(auth)
@@ -126,11 +151,36 @@ impl PrivateClient {
 
   /// Switches the current authentication context to a subaccount
   /// - `subject_id` - The ID of the subaccount to switch to. Can be found on https://deribit.com/account/BTC/subaccounts.
+  /// - `scope` - Optional scope to request. Permissions cannot exceed those of the current session.
   /// 
   /// Source: [Deribit docs](https://docs.deribit.com/#public-exchange_token)
-  pub async fn switch_subaccount(&mut self, subject_id: i64) -> Result<&Auth, Error> {
-    self.auth = self.exchange_token(subject_id).await?;
+  pub async fn switch_subaccount(&mut self, subject_id: i64, scope: Option<Scope>) -> Result<&Auth, Error> {
+    self.auth = self.exchange_token(subject_id, scope).await?;
     Ok(&self.auth)
+  }
+
+  /// Forks the current access token to a new session with the given name. Doesn't change the current authentication context; use `fork_session` for that.
+  /// - `session_name` - The name of the new session. This can be any nonempty string, but should be unique for each session.
+  ///
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-fork_token)
+  pub async fn fork_token(&mut self, session_name: &str) -> Result<Auth, Error> {
+    let params = serde_json::json!({
+      "refresh_token": self.auth.response.refresh_token,
+      "session_name": session_name,
+    });
+    let val = self.request("public/fork_token", params).await?.value()?;
+    let auth = parse_json::<AuthResponse>(val)?.parse();
+    Ok(auth)
+  }
+
+  /// Forks the current access token to a new session with the given name and returns a new `PrivateClient` with the new session.
+  /// - `session_name` - The name of the new session. This can be any nonempty string, but should be unique for each session.
+  /// 
+  /// Source: [Deribit docs](https://docs.deribit.com/#public-fork_token)
+  pub async fn fork_session(&mut self, session_name: &str) -> Result<PrivateClient, Error> {
+    let auth = self.fork_token(session_name).await?;
+    let client = Arc::clone(&self.client);
+    Ok(PrivateClient { client, auth })
   }
 
   /// Gracefully closes the connection.
@@ -142,7 +192,7 @@ impl PrivateClient {
       "invalidate_token": invalidate_token,
       "access_token": self.auth.response.access_token,
     });
-    self.client.send("private/logout", params, 0).await?; // the server doesn't reply to this method
+    self.send("private/logout", params, 0).await?; // the server doesn't reply to this method
     Ok(())
   }
 }
