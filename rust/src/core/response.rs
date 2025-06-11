@@ -14,6 +14,10 @@ pub struct Response {
   pub result: Option<serde_json::Value>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub error: Option<ApiError>,
+  // pub testnet: bool,
+  // pub usDiff: u64,
+  // pub usIn: u64,
+  // pub usOut: u64,
 }
 
 /// JSON-RPC notification
@@ -30,6 +34,7 @@ pub struct NotificationParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
 pub enum Message {
   Response(Response),
   Notification(Notification),
@@ -64,6 +69,7 @@ impl ResponseHandler {
   }
 
   pub fn handle(&self, message: &str) {
+    println!("Received message: {}", serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(message).unwrap()).unwrap());
     match serde_json::from_str::<Message>(message) {
       Ok(Message::Response(resp)) => {
         let mut requests = self.requests.lock().unwrap();
